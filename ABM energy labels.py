@@ -312,3 +312,197 @@ model_data
 agent_data = model.datacollector.get_agent_vars_dataframe()
 agent_data
 
+# Visualize time series
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+fig.suptitle('Energy Label Transition Model - 30 Year Simulation', 
+             fontsize=16, fontweight='bold')
+
+# Plot 1: Cumulative transitions
+axes[0].plot(model_data.index, model_data['Num_Transitioned'], 
+             linewidth=2.5, color='green', marker='o', markersize=4)
+axes[0].set_xlabel('Year', fontsize=11)
+axes[0].set_ylabel('Number of Transitions', fontsize=11)
+axes[0].set_title('Cumulative Transitions', fontsize=12, fontweight='bold')
+axes[0].grid(True, alpha=0.3)
+
+# Plot 2: Average label vs target
+axes[1].plot(model_data.index, model_data['Avg_Label_Numeric'], 
+             linewidth=2.5, color='blue', label='Actual')
+target_value = label_to_numeric(model.target_label)
+axes[1].axhline(y=target_value, color='red', linestyle='--', 
+                linewidth=2, label=f'Target: {model.target_label}')
+axes[1].set_xlabel('Year', fontsize=11)
+axes[1].set_ylabel('Average Label', fontsize=11)
+axes[1].set_title('City Average Energy Label', fontsize=12, fontweight='bold')
+axes[1].set_yticks(range(8))
+axes[1].set_yticklabels(['G', 'F', 'E', 'D', 'C', 'B', 'A', 'A+'])
+axes[1].legend()
+axes[1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+from matplotlib.animation import FuncAnimation
+from IPython.display import HTML
+import time
+import matplotlib
+
+# Increase the limit for embedding animations in notebooks
+matplotlib.rcParams['animation.embed_limit'] = 2**128
+
+start_time = time.time()
+
+# Create a new model to run and animate
+print("Creating new model for animation...")
+animation_model = City(
+    num_houses=50,
+    num_owners=40,
+    grid_size=10,
+    financial_status_mean=30000,
+    financial_status_std=5000,
+    target_label="A",
+    seed=42
+)
+
+# Store states for all 30 years (including year 0)
+print("Running simulation and collecting grid states for 30 years...")
+grid_states = []
+stats_over_time = []
+
+# Collect initial state (year 0)
+# Use Mesa's agents_by_type to filter houses
+houses = list(animation_model.agents_by_type[House])
+# Create empty grid filled with -1 (represents empty cells)
+grid_viz = np.full((animation_model.grid_size, animation_model.grid_size), -1.0)
+
+# Fill grid with house information
+for house in houses:
+    x, y = house.pos
+    if house.owner_id is None:
+        grid_viz[y, x] = -0.5  # Vacant house (no owner)
+    else:
+        grid_viz[y, x] = label_to_numeric(house.current_label)  # Store label as number
+
+# Store initial grid state and statistics
+grid_states.append(grid_viz.copy())
+stats_over_time.append({
+    'year': 0,
+    'transitions': animation_model.count_transitions(),
+    'avg_label': animation_model.get_current_avg_label()
+})
+
+# Run simulation and collect states for each year
+for year in range(1, 31):
+    animation_model.step()  # Advance simulation one year
+    
+    # Update grid state for this year
+    # Use Mesa's agents_by_type for filtering
+    houses = list(animation_model.agents_by_type[House])
+    grid_viz = np.full((animation_model.grid_size, animation_model.grid_size), -1.0)
+    
+    # Fill grid with current house information
+    for house in houses:
+        x, y = house.pos
+        if house.owner_id is None:
+            grid_viz[y, x] = -0.5  # Vacant house
+        else:
+            grid_viz[y, x] = label_to_numeric(house.current_label)  # Current label
+    
+    # Store this year's grid state and statistics
+    grid_states.append(grid_viz.copy())
+    stats_over_time.append({
+        'year': year,
+        'transitions': animation_model.count_transitions(),
+        'avg_label': animation_model.get_current_avg_label()
+    })
+    
+    # Print progress every 10 years
+    if year % 10 == 0:
+        print(f"  Collected state for year {year}")
+
+print(f"Collected {len(grid_states)} grid states")
+print("\nCreating animation (this may take 1-2 minutes)...")
+
+# Create figure for animation
+fig, ax = plt.subplots(figsize=(12, 10))
+plt.tight_layout(rect=[0, 0, 0.85, 1])
+
+# Define colors and colormap
+# White=empty, LightGray=vacant, then G(red) → F → E → D → C → B → A → A+(blue)
+colors = ['white', 'lightgray', '#d62728', '#ff7f0e', '#ffbb78', '#ffd700', 
+          '#90ee90', '#2ca02c', '#1f77b4', '#0000ff']
+cmap = ListedColormap(colors)
+
+# Create legend elements
+legend_elements = [
+    Patch(facecolor='white', edgecolor='black', label='Empty Cell'),
+    Patch(facecolor='lightgray', edgecolor='black', label='Vacant House'),
+    Patch(facecolor='#d62728', edgecolor='black', label='Label G'),
+    Patch(facecolor='#ff7f0e', edgecolor='black', label='Label F'),
+    Patch(facecolor='#ffbb78', edgecolor='black', label='Label E'),
+    Patch(facecolor='#ffd700', edgecolor='black', label='Label D'),
+    Patch(facecolor='#90ee90', edgecolor='black', label='Label C'),
+    Patch(facecolor='#2ca02c', edgecolor='black', label='Label B'),
+    Patch(facecolor='#1f77b4', edgecolor='black', label='Label A'),
+    Patch(facecolor='#0000ff', edgecolor='black', label='Label A+')
+]
+
+# Function to plot grid at each frame of animation
+def plot_grid(frame):
+    ax.clear()  # Clear previous frame
+    
+    # Get grid state and stats for this frame (year)
+    grid_data = grid_states[frame]
+    stats = stats_over_time[frame]
+    
+    # Map values for colormap: -1→0 (empty), -0.5→1 (vacant), 0-7→2-9 (labels G-A+)
+    display_grid = np.where(grid_data == -1, 0,
+                   np.where(grid_data == -0.5, 1, grid_data + 2))
+    
+    # Display grid with colors
+    im = ax.imshow(display_grid, cmap=cmap, vmin=0, vmax=9, origin='lower')
+    
+    # Add grid lines between cells
+    ax.set_xticks(np.arange(-0.5, animation_model.grid_size, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, animation_model.grid_size, 1), minor=True)
+    ax.grid(which="minor", color="black", linestyle='-', linewidth=0.5)
+    ax.set_xticks([])  # Hide axis tick labels
+    ax.set_yticks([])
+    
+    # Add legend showing what each color means
+    ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.02, 0.5), 
+              fontsize=9, frameon=True)
+    
+    # Title with year and statistics
+    ax.set_title(
+        f'Energy Label Transition Model - Year {stats["year"]}\n'
+        f'Transitions: {stats["transitions"]}/{animation_model.num_owners} | '
+        f'Avg Label: {stats["avg_label"]}',
+        fontsize=14, fontweight='bold', pad=15
+    )
+
+# Initial plot (frame 0)
+plot_grid(0)
+
+# Update function for animation - called for each frame
+def update(frame):
+    plot_grid(frame)
+
+# Create animation (31 frames for years 0-30)
+anim = FuncAnimation(fig, update, frames=31, repeat=True, interval=300)
+
+# Convert to HTML for display in notebook
+output = HTML(anim.to_jshtml())
+
+end_time = time.time()
+elapsed_time = end_time - start_time
+
+print(f"\n✓ Animation complete!")
+print(f"  Time taken: {elapsed_time:.1f} seconds")
+print(f"  Total frames: 31 (years 0-30)")
+print(f"  Frame interval: 300ms (~3 frames per second)")
+
+# Display the animation
+output
+
+
